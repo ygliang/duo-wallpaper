@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="zh-Hant"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Duo 桌布裁切室</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#101522;color:#f2f4fb;font:16px/1.5 system-ui,sans-serif}main{max-width:1050px;margin:auto;padding:clamp(20px,5vw,56px)}header{border-bottom:1px solid #343d54;padding-bottom:24px;margin-bottom:24px}h1{font-size:clamp(32px,6vw,60px);letter-spacing:-.05em;margin:0}p{color:#bac4da;margin:8px 0}.chooser,button,.download{display:inline-flex;align-items:center;justify-content:center;min-height:46px;padding:8px 16px;border-radius:10px;border:1px solid #56647f;background:#222d43;color:inherit;font:inherit;text-decoration:none;cursor:pointer}.chooser{background:#c8fa8d;color:#172219;font-weight:750;border-color:transparent}input[type=file]{position:absolute;width:1px;height:1px;opacity:0}.chooser:focus-within,:focus-visible{outline:3px solid #c8fa8d;outline-offset:4px}.row,.controls,.actions{display:flex;align-items:center;flex-wrap:wrap;gap:10px 16px}.previews{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr);gap:clamp(10px,3vw,28px);margin:22px 0;align-items:start}.panel{min-width:0}.panel h2{font-size:16px;margin:0}.dim{display:block;color:#bac4da;font-size:13px;margin-bottom:8px}.screen{position:relative;overflow:hidden;border:1px solid #596780;border-radius:14px;background:linear-gradient(145deg,#253450,#171e2d)}.inner{aspect-ratio:2670/1878;touch-action:none;cursor:grab}.inner:active{cursor:grabbing}.outer{aspect-ratio:1398/2034}.screen canvas{display:block;width:100%;height:100%}.crop{position:absolute;top:0;bottom:0;width:48.3456%;right:0;border:2px solid #c8fa8d;background:#c8fa8d12;pointer-events:none}.crop.left{left:0;right:auto}.controls{padding:16px 0;border-top:1px solid #343d54;border-bottom:1px solid #343d54}.controls label{display:flex;align-items:center;gap:8px}input[type=range]{width:clamp(90px,24vw,180px);accent-color:#c8fa8d}select{background:#222d43;color:inherit;min-height:40px;border:1px solid #56647f;border-radius:8px;font:inherit}.actions{margin-top:16px}button:disabled,fieldset:disabled{opacity:.58;cursor:default}fieldset{border:0;padding:0;margin:0;min-width:0}[hidden]{display:none!important}footer{margin-top:24px;color:#bac4da;font-size:14px}.output{margin:12px 0}.output img{display:block;max-width:min(100%,340px);max-height:320px;object-fit:contain;border-radius:10px;margin:12px 0}
+</style>
+<main>
+<header><h1>Duo 桌布裁切室</h1><p>用同一張照片做出闔起與翻開時相接的桌布。</p></header>
+<div class="row"><label class="chooser">選擇照片<input id="file" type="file" accept="image/*"></label><span id="status" role="status">圖片只在這台裝置上處理。</span></div>
+<section class="previews" aria-label="桌布預覽">
+<div class="panel"><h2>內屏 · 翻開</h2><span class="dim">2670 × 1878 px</span><div id="drag" class="screen inner" tabindex="0" role="group" aria-label="內屏構圖，可拖曳或使用方向鍵移動"><canvas id="inside" width="712" height="501"></canvas><div id="crop" class="crop"></div></div></div>
+<div class="panel"><h2>外屏 · 闔起</h2><span class="dim">1398 × 2034 px</span><div class="screen outer"><canvas id="outside" width="280" height="407"></canvas></div></div>
+</section>
+<fieldset id="controls" disabled>
+<div class="controls"><label>外屏取景 <select id="side"><option value="right">右側</option><option value="left">左側</option></select></label><label>縮放 <input id="zoom" type="range" min="1" max="4" step=".01" value="1"></label><button id="reset">重置構圖</button></div>
+<div class="actions"><button data-screen="inner">匯出內屏 JPG</button><button data-screen="outer">匯出外屏 JPG</button></div>
+</fieldset>
+<section class="output" id="output" hidden aria-label="匯出結果"><p id="exportLabel"></p><div class="row"><button id="share" hidden>分享／儲存影像</button><a class="download" id="download">下載 JPG</a></div><img id="result" alt="匯出的桌布"></section>
+<footer>在內屏預覽上拖曳調整構圖。綠框標出外屏會看到的範圍。<br>使用 NS2 截圖時，先從 Nintendo Switch App 的相簿儲存到「照片」。在 Safari 匯出後，可用分享選單儲存影像，或長按匯出的圖片。</footer>
+</main>
+<script>
+'use strict';
+const byId = id => document.getElementById(id);
+const dimensions = {inner:[2670,1878],outer:[1398,2034]};
+const [width,height] = dimensions.inner;
+const [outerWidth,outerHeight] = dimensions.outer;
+const cropWidth = height * outerWidth / outerHeight;
+const fileInput = byId('file'), status = byId('status'), controls = byId('controls');
+const zoom = byId('zoom'), side = byId('side'), drag = byId('drag');
+const output = byId('output'), share = byId('share');
+const crop = byId('crop');
+crop.style.width = (100 * cropWidth / width) + '%';
+let image, x = 0, y = 0, pointer, generated, outputUrl, revision = 0, loadId = 0;
+function frame() {
+  const scale = Math.max(width / image.naturalWidth,height / image.naturalHeight) * Number(zoom.value);
+  const w = image.naturalWidth * scale, h = image.naturalHeight * scale;
+  x = Math.max((width-w)/2,Math.min((w-width)/2,x));
+  y = Math.max((height-h)/2,Math.min((h-height)/2,y));
+  return {scale,w,h,left:(width-w)/2+x,top:(height-h)/2+y};
+}
+function paint(canvas, screen, layout) {
+  const outer = screen === 'outer';
+  const regionWidth = outer ? cropWidth : width;
+  const regionLeft = outer && side.value === 'right' ? width-cropWidth : 0;
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(canvas.width / regionWidth,0,0,canvas.height / height,0,0);
+  ctx.fillStyle = '#101522';
+  ctx.fillRect(0,0,regionWidth,height);
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(image,layout.left-regionLeft,layout.top,layout.w,layout.h);
+}
+function clearExport() {
+  revision++;
+  output.hidden = true;
+  generated = null;
+  if (outputUrl) URL.revokeObjectURL(outputUrl);
+  outputUrl = null;
+  byId('result').removeAttribute('src');
+  byId('download').removeAttribute('href');
+}
+function render() {
+  if (!image) return;
+  const layout = frame();
+  paint(byId('inside'),'inner',layout);
+  paint(byId('outside'),'outer',layout);
+  crop.classList.toggle('left',side.value === 'left');
+}
+function changed() { clearExport(); render(); }
+function reset() { x = 0; y = 0; zoom.value = '1'; changed(); }
+fileInput.addEventListener('change',()=>{
+  const file = fileInput.files[0];
+  fileInput.value = '';
+  if (!file) return;
+  const request = ++loadId;
+  const url = URL.createObjectURL(file);
+  const candidate = new Image();
+  status.textContent = '正在讀取圖片…';
+  candidate.onload = ()=>{
+    URL.revokeObjectURL(url);
+    if (request !== loadId) return;
+    image = candidate;
+    controls.disabled = false;
+    reset();
+    status.textContent = candidate.naturalWidth+' × '+candidate.naturalHeight+' px · 拖曳內屏預覽可調整位置';
+  };
+  candidate.onerror = ()=>{
+    URL.revokeObjectURL(url);
+    if (request === loadId) status.textContent = '無法讀取這張圖，請試用 JPG 或 PNG。';
+  };
+  candidate.src = url;
+});
+zoom.addEventListener('input',changed);
+side.addEventListener('change',changed);
+byId('reset').addEventListener('click',reset);
+drag.addEventListener('pointerdown',event=>{
+  if (!image || pointer || event.button !== 0) return;
+  drag.setPointerCapture(event.pointerId);
+  pointer = {id:event.pointerId,x:event.clientX,y:event.clientY};
+});
+drag.addEventListener('pointermove',event=>{
+  if (pointer?.id !== event.pointerId) return;
+  const bounds = drag.getBoundingClientRect();
+  x += (event.clientX-pointer.x)*width/bounds.width;
+  y += (event.clientY-pointer.y)*height/bounds.height;
+  pointer.x = event.clientX;
+  pointer.y = event.clientY;
+  changed();
+});
+for (const type of ['pointerup','pointercancel','lostpointercapture']) {
+  drag.addEventListener(type,event=>{ if (pointer?.id === event.pointerId) pointer = null; });
+}
+drag.addEventListener('keydown',event=>{
+  const offsets = {ArrowLeft:[-30,0],ArrowRight:[30,0],ArrowUp:[0,-30],ArrowDown:[0,30]};
+  if (!image || !offsets[event.key]) return;
+  event.preventDefault();
+  const [dx,dy] = offsets[event.key];
+  x += dx; y += dy; changed();
+});
+for (const button of document.querySelectorAll('[data-screen]')) {
+  button.addEventListener('click',()=>{
+    if (!image) return;
+    clearExport();
+    const request = revision;
+    const screen = button.dataset.screen;
+    const canvas = document.createElement('canvas');
+    [canvas.width,canvas.height] = dimensions[screen];
+    const filename = 'duo-'+screen+'-'+canvas.width+'x'+canvas.height+'.jpg';
+    paint(canvas,screen,frame());
+    canvas.toBlob(blob=>{
+      canvas.width = canvas.height = 1;
+      if (request !== revision) return;
+      if (!blob) { status.textContent = '匯出失敗，請再試一次。'; return; }
+      generated = new File([blob],filename,{type:'image/jpeg'});
+      outputUrl = URL.createObjectURL(blob);
+      const download = byId('download');
+      download.href = outputUrl;
+      download.download = filename;
+      byId('result').src = outputUrl;
+      byId('exportLabel').textContent = (screen === 'inner' ? '內屏' : '外屏')+'桌布已產生';
+      share.hidden = !navigator.canShare?.({files:[generated]});
+      output.hidden = false;
+      output.scrollIntoView({block:'nearest'});
+    },'image/jpeg',.96);
+  });
+}
+share.addEventListener('click',async ()=>{
+  if (!generated) return;
+  try { await navigator.share({files:[generated]}); }
+  catch (error) { if (error.name !== 'AbortError') status.textContent = '請使用下載 JPG，或長按圖片儲存。'; }
+});
+</script>
+</html>
